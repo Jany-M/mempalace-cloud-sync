@@ -176,20 +176,28 @@ Example using plain Python:
 ```json
 {
   "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
-      }]
-    }],
-    "SessionEnd": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
-      }]
-    }]
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
