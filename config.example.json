@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy this to ~/.mempalace/mp_sync_config.json and fill in your values.",
+  "_comment2": "Or just run: python mp_sync.py setup  (interactive, auto-detects Dropbox)",
+
+  "sync_folder": "E:\\Dropbox\\mempalace-sync",
+  "palace_path": "C:\\Users\\YOU\\.mempalace\\palace",
+  "machine_name": "home-pc"
+}
