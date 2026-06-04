@@ -2,7 +2,10 @@
 
 Version 1.0.0
 
-Bidirectional sync for [MemPalace](https://github.com/MemPalace/mempalace) across multiple devices/machines, via your preferred Cloud Storage provider (Dropbox, Google Drive, OneDrive etc.).
+Bidirectional sync for [MemPalace](https://github.com/MemPalace/mempalace) across multiple machines, via your preferred Cloud Storage provider (Dropbox, Google Drive, OneDrive etc.).
+
+> Don't have MemPalace yet?
+> Here's a [guide on how to setup MemPalace](https://www.shambix.com/ai-persistent-memory-mempalace-guide-claude-lmstudio-cursor-vscode/) on your machine and connect it to your favorite IDEs and AI tools.
 
 ---
 
