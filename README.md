@@ -300,8 +300,7 @@ Notes:
 Run in Powershell, adjust minutes how you want, e.g. 15min with the Python command:
 
 ```
-schtasks /create /tn "MemPalace Sync" /tr "python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py sync
-  --quiet" /sc minute /mo 15 /f
+schtasks /create /tn "MemPalace Sync" /tr "python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py sync --quiet" /sc minute /mo 60 /f
 ```
 
 ---
