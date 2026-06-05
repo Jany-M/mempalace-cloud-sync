@@ -205,8 +205,12 @@ Example using plain Python:
 Notes:
 
 - `SessionStart` and `SessionEnd` are Claude Code session lifecycle events.
-- `Stop` is also available, but it fires when Claude finishes responding, which is usually more frequent than session-level hooks.
-- **Claude Desktop** doesn't have hooks, so look into *Scheduled Tasks* in *Claude Cowork* or run a normal OS scheduler task.
+- However, `SessionEnd` only fires on a clean Claude Code session exit (for example `/exit`, `Ctrl+D`, or quitting through the menu), and *does not exist* at all in Claude Code *CLI*.
+- If you use Claude Code CLI regularly, `SessionEnd` will not fire, so the final push will be skipped.
+- Alternative 1: use Claude Code `/schedule` for periodic syncs (works, but each run uses tokens).
+- Alternative 2: add a `Stop` hook as a fallback (token-free, but can add small latency because it runs after each agent response).
+- Alternative 3: use a OS task scheduler instead of hooks (for Windows, see `Auto Sync every 15 min` in `Alternative Sync Methods` below).
+- **Claude Cowork** doesn't have hooks, so look into its *Scheduled Tasks* or use an OS task scheduler.
 
 ### Cursor hooks
 
@@ -221,12 +225,12 @@ If setup printed a uv command, use that full uv command here instead of the exam
   "hooks": {
     "sessionStart": [
       {
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py pull --quiet"
       }
     ],
     "sessionEnd": [
       {
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py push --quiet"
       }
     ]
   }
@@ -254,13 +258,13 @@ If you want a VS Code-specific hook file, use:
     "SessionStart": [
       {
         "type": "command",
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py pull --quiet"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py push --quiet"
       }
     ]
   }
@@ -280,7 +284,9 @@ Notes:
 - VS Code hooks overview: <https://code.visualstudio.com/learn/customizations/5-hooks>
 - VS Code hooks reference (preview): <https://code.visualstudio.com/docs/agent-customization/hooks>
 
-### Optional: auto-pull on Windows login
+### Alternative Sync Methods examples (Windows Task Scheduler)
+
+## Auto Pull on Windows login
 
 1. Open Task Scheduler -> Create Basic Task
 2. Trigger: When I log on
@@ -288,6 +294,15 @@ Notes:
 4. Use the same launcher that setup printed under `Hook launcher`
 5. If setup printed a Python command, use `python` with arguments like `C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py pull --quiet`
 6. If setup printed a uv command, use `uv` with arguments like `run --with mempalace python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py pull --quiet`
+
+## Auto Sync every 15 min
+
+Run in Powershell, adjust minutes how you want, e.g. 15min with the Python command:
+
+```
+schtasks /create /tn "MemPalace Sync" /tr "python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py sync
+  --quiet" /sc minute /mo 15 /f
+```
 
 ---
 
