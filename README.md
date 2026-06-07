@@ -209,7 +209,7 @@ Notes:
 - If you use Claude Code CLI regularly, `SessionEnd` will not fire, so the final push will be skipped.
 - Alternative 1: use Claude Code `/schedule` for periodic syncs (works, but each run uses tokens).
 - Alternative 2: add a `Stop` hook as a fallback (token-free, but can add small latency because it runs after each agent response).
-- Alternative 3: use a OS task scheduler instead of hooks (for Windows, see `Auto Sync every 15 min` in `Alternative Sync Methods` below).
+- Alternative 3: use a OS task scheduler instead of hooks (for Windows, see `Auto Sync every 60 min` in `Alternative Sync Methods` below).
 - **Claude Cowork** doesn't have hooks, so look into its *Scheduled Tasks* or use an OS task scheduler.
 
 ### Cursor hooks
@@ -284,9 +284,9 @@ Notes:
 - VS Code hooks overview: <https://code.visualstudio.com/learn/customizations/5-hooks>
 - VS Code hooks reference (preview): <https://code.visualstudio.com/docs/agent-customization/hooks>
 
-### Alternative Sync Methods examples (Windows Task Scheduler)
+## Alternative Sync Methods examples (Windows Task Scheduler)
 
-## Auto Pull on Windows login
+### Auto Pull on Windows login
 
 1. Open Task Scheduler -> Create Basic Task
 2. Trigger: When I log on
@@ -295,7 +295,7 @@ Notes:
 5. If setup printed a Python command, use `python` with arguments like `C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py pull --quiet`
 6. If setup printed a uv command, use `uv` with arguments like `run --with mempalace python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py pull --quiet`
 
-## Auto Sync every 15 min
+## Auto Sync every 60 min
 
 Run in Powershell, adjust minutes how you want, e.g. 15min with the Python command:
 
