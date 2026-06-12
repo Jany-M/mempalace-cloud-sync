@@ -349,9 +349,29 @@ Quarantined corrupt HNSW segment ... (sqlite 373s newer than HNSW and integrity 
 
 **Effect on sync:** `push` exports from SQLite (not HNSW), so the snapshot is always complete regardless of HNSW drift. Export counts are cross-checked against SQLite and surfaced in the manifest. `.drift-*` dirs are cleaned up automatically on every push (keeping the 2 most recent per segment as a rollback backup). You can also run `python mp_sync.py clean` to housekeep them manually.
 
-**Auto-mitigation built into mp_sync:** Before every push and pull, `mp_sync.py` runs `mempalace repair-status` to detect drift without opening a ChromaDB client. If any segment shows `DRIFTED` status, it automatically runs `mempalace repair --yes` to rebuild the HNSW from SQLite before exporting. This means by the time `push` writes the snapshot, HNSW and SQLite are always in sync.
+**Root fix:** The MemPalace server needs graceful `SIGTERM`/`SIGINT` handling to flush HNSW before exit. Until that is implemented upstream, the mitigation chain below handles it transparently.
 
-**Root fix:** The MemPalace server needs graceful `SIGTERM`/`SIGINT` handling to flush HNSW before exit. Until that is implemented upstream, the auto-repair step in mp_sync handles it transparently.
+### Mitigation chain (built into mp_sync)
+
+Every `push` and `pull` runs the following steps automatically, in order:
+
+**Step 1 — HNSW health check (`_check_hnsw_health`)**
+Runs `mempalace repair-status` without opening a ChromaDB client. Reads raw HNSW metadata to determine the status of each segment: `OK`, `DRIFTED`, or `UNKNOWN`. This is a safe, read-only probe — it cannot cause further damage.
+
+**Step 2 — Auto-repair if drifted (`_repair_hnsw_if_drifted`)**
+If any segment reports `DRIFTED`, runs `mempalace repair --yes` to fully rebuild the HNSW from SQLite before any export or merge begins. Logs clearly if repair fails, and falls back gracefully — the export still proceeds from SQLite.
+
+**Step 3 — Export from SQLite, not HNSW (`_collect_snapshot`)**
+The `push` snapshot is always read from the SQLite metadata store, not from the HNSW vector index. This means a stale or partially-rebuilt HNSW has zero effect on the completeness of the exported data.
+
+**Step 4 — Count cross-validation**
+After export, the record count is checked against both `col.count()` (ChromaDB) and a direct `SELECT COUNT(*)` on the SQLite `embeddings` table. Any mismatch surfaces as a warning in stdout, the manifest, and the quiet-mode sync log — so incomplete snapshots are never silently accepted.
+
+**Step 5 — Drift dir cleanup**
+Old `.drift-*` quarantine directories are pruned on every push, keeping only the 2 most recent per segment as a rollback backup. Run `python mp_sync.py clean` to housekeep manually.
+
+**Step 6 — Post-pull health check**
+After merging an incoming snapshot, `pull` runs `col.count()`, an HNSW divergence probe, and `PRAGMA quick_check` on the knowledge graph. If anything fails, local state is restored from the pre-merge backup automatically.
 
 ---
 
