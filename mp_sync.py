@@ -92,6 +92,76 @@ def _sqlite_collection_counts(palace_path: str) -> dict[str, int]:
         return {}
 
 
+def _check_hnsw_health(palace_path: str) -> dict[str, str]:
+    """Run `mempalace repair-status` without opening a ChromaDB client.
+
+    Returns {collection_name: status} where status is one of OK / DRIFTED / UNKNOWN.
+    Returns {} if the mempalace binary is not on PATH or the command fails.
+    """
+    mempalace_bin = shutil.which("mempalace")
+    if not mempalace_bin:
+        return {}
+    try:
+        r = subprocess.run(
+            [mempalace_bin, "--palace", palace_path, "repair-status"],
+            capture_output=True, text=True, timeout=30,
+        )
+        statuses: dict[str, str] = {}
+        current: str | None = None
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1]
+            elif line.startswith("status:") and current:
+                statuses[current] = line.split(":", 1)[1].strip()
+        return statuses
+    except Exception:
+        return {}
+
+
+def _repair_hnsw_if_drifted(palace_path: str, quiet: bool) -> bool:
+    """Check HNSW health and run `mempalace repair --yes` for any DRIFTED segment.
+
+    Returns True if no repair was needed, or repair ran and succeeded.
+    Returns False if repair was needed but failed (caller should still export from SQLite
+    and rely on count validation to catch any data loss).
+    """
+    health = _check_hnsw_health(palace_path)
+    if not health:
+        return True  # binary not available — skip, runtime will auto-heal on client open
+
+    drifted = [col for col, status in health.items() if status == "DRIFTED"]
+    if not drifted:
+        return True
+
+    if not quiet:
+        print(
+            f"[mp_sync] HNSW drift detected for: {', '.join(drifted)} — "
+            f"running `mempalace repair --yes` before export"
+        )
+
+    mempalace_bin = shutil.which("mempalace")
+    if not mempalace_bin:
+        return False
+
+    try:
+        r = subprocess.run(
+            [mempalace_bin, "--palace", palace_path, "repair", "--yes"],
+            timeout=180,
+        )
+        if r.returncode == 0:
+            if not quiet:
+                print("[mp_sync] ✓ HNSW rebuilt from SQLite")
+            return True
+        if not quiet:
+            print(f"[mp_sync] Warning: `mempalace repair` exited {r.returncode} — export will proceed from SQLite")
+        return False
+    except Exception as exc:
+        if not quiet:
+            print(f"[mp_sync] Warning: `mempalace repair` failed: {exc} — export will proceed from SQLite")
+        return False
+
+
 def _cleanup_old_drift_dirs(palace_path: str, keep: int = 2, quiet: bool = False) -> int:
     """Remove old .drift-* dirs, keeping only the `keep` most recent per segment UUID.
 
@@ -1013,6 +1083,7 @@ def _do_push(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
     if not quiet:
         print(f"\n── Push: {machine} → {my_export.name}/ ──────────────────")
 
+    _repair_hnsw_if_drifted(palace_path, quiet)
     drift_before = len(_find_drift_dirs(palace_path))
     manifest = _collect_snapshot(my_export, palace_path, machine)
     drift_after = _find_drift_dirs(palace_path)
@@ -1059,6 +1130,8 @@ def _do_pull(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
             print(f"[mp_sync] No other machines have pushed yet — nothing to pull.")
             print(f"[mp_sync] Expected folders like  export-<other-machine>/  inside {sync_folder}")
         return
+
+    _repair_hnsw_if_drifted(palace_path, quiet)
 
     backup = None
     pull_ok = False

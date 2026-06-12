@@ -154,6 +154,12 @@ Check state (shows machine folders, record counts, and last push/pull metadata):
 python mp_sync.py status
 ```
 
+Remove accumulated `.drift-*` HNSW quarantine dirs (push does this automatically; run manually if needed):
+
+```
+python mp_sync.py clean
+```
+
 ---
 
 ## Automation
@@ -327,6 +333,25 @@ E:\Dropbox\mempalace-sync\
 ```
 
 `.jsonl` files are plain text (one JSON object per line).
+
+---
+
+## Known Issues
+
+### Recurring HNSW drift after ungraceful process shutdown
+
+**What it is:** MemPalace keeps memories in two places: a SQLite database (crash-safe via WAL) and a binary HNSW vector index on disk. When the MemPalace MCP server is killed without a clean shutdown — e.g. when a Claude Code session ends abruptly or the OS terminates the process — SQLite is safely flushed, but the HNSW binary may not be fully written. On the next startup the runtime detects the mismatch and auto-rebuilds the HNSW from SQLite, quarantining the stale index as a `.drift-<timestamp>` directory. **No memory data is ever lost** — SQLite is always the authoritative source of truth.
+
+**When you see it:** During `push` or `pull` you may see messages like:
+```
+Quarantined corrupt HNSW segment ... (sqlite 373s newer than HNSW and integrity check failed)
+```
+
+**Effect on sync:** `push` exports from SQLite (not HNSW), so the snapshot is always complete regardless of HNSW drift. Export counts are cross-checked against SQLite and surfaced in the manifest. `.drift-*` dirs are cleaned up automatically on every push (keeping the 2 most recent per segment as a rollback backup). You can also run `python mp_sync.py clean` to housekeep them manually.
+
+**Auto-mitigation built into mp_sync:** Before every push and pull, `mp_sync.py` runs `mempalace repair-status` to detect drift without opening a ChromaDB client. If any segment shows `DRIFTED` status, it automatically runs `mempalace repair --yes` to rebuild the HNSW from SQLite before exporting. This means by the time `push` writes the snapshot, HNSW and SQLite are always in sync.
+
+**Root fix:** The MemPalace server needs graceful `SIGTERM`/`SIGINT` handling to flush HNSW before exit. Until that is implemented upstream, the auto-repair step in mp_sync handles it transparently.
 
 ---
 
