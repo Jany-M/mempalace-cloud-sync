@@ -62,6 +62,64 @@ def require(cfg: dict, key: str) -> str:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+def _find_drift_dirs(palace_path: str) -> list[Path]:
+    """Return all .drift-* quarantined HNSW segment directories in the palace."""
+    palace = Path(palace_path).expanduser().resolve()
+    return sorted(palace.glob("*.drift-*"))
+
+
+def _sqlite_collection_counts(palace_path: str) -> dict[str, int]:
+    """Read authoritative embedding counts per collection directly from ChromaDB's SQLite.
+
+    Returns {} on any error so callers can treat it as an optional cross-check.
+    """
+    db = Path(palace_path).expanduser().resolve() / "chroma.sqlite3"
+    if not db.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(db))
+        rows = conn.execute(
+            "SELECT c.name, COUNT(e.id) "
+            "FROM embeddings e "
+            "JOIN segments s ON e.segment_id = s.id "
+            "JOIN collections c ON s.collection = c.id "
+            "WHERE s.scope = 'METADATA' "
+            "GROUP BY c.name"
+        ).fetchall()
+        conn.close()
+        return {name: count for name, count in rows}
+    except Exception:
+        return {}
+
+
+def _cleanup_old_drift_dirs(palace_path: str, keep: int = 2, quiet: bool = False) -> int:
+    """Remove old .drift-* dirs, keeping only the `keep` most recent per segment UUID.
+
+    Returns the number of directories removed.
+    """
+    palace = Path(palace_path).expanduser().resolve()
+    by_segment: dict[str, list[Path]] = {}
+    for d in palace.glob("*.drift-*"):
+        uuid = d.name.split(".drift-")[0]
+        by_segment.setdefault(uuid, []).append(d)
+
+    removed = 0
+    for _uuid, dirs in by_segment.items():
+        dirs.sort()  # lexicographic = chronological for the timestamp suffix
+        to_remove = dirs[:-keep] if len(dirs) > keep else []
+        for d in to_remove:
+            try:
+                shutil.rmtree(d)
+                removed += 1
+            except Exception as exc:
+                if not quiet:
+                    print(f"[mp_sync] Warning: could not remove drift dir {d.name}: {exc}")
+
+    if removed and not quiet:
+        print(f"[mp_sync] Cleaned up {removed} old HNSW drift segment(s)")
+    return removed
+
+
 def run(cmd: list, check=True, quiet=False) -> subprocess.CompletedProcess:
     if not quiet:
         print(f"[mp_sync] $ {' '.join(str(c) for c in cmd)}")
@@ -305,11 +363,21 @@ def _snapshot_files_dir(export_dir: Path) -> Path:
     return _snapshot_dir(export_dir) / "files"
 
 
-def _export_collection_records(backend, palace_path: str, collection_name: str) -> list[dict]:
+def _export_collection_records(backend, palace_path: str, collection_name: str) -> tuple[list[dict], int | None]:
+    """Export all records from a ChromaDB collection.
+
+    Returns (rows, expected_count) where expected_count is from col.count() taken
+    before iteration — a mismatch signals the collection changed mid-export.
+    """
     try:
         col = backend.get_collection(palace_path, collection_name, create=False)
     except Exception:
-        return []
+        return [], None
+
+    try:
+        expected = col.count()
+    except Exception:
+        expected = None
 
     rows: list[dict] = []
     offset = 0
@@ -326,7 +394,8 @@ def _export_collection_records(backend, palace_path: str, collection_name: str) 
         if len(ids) < batch:
             break
         offset += len(ids)
-    return rows
+
+    return rows, expected
 
 
 def _copy_if_exists(src: Path, dst: Path):
@@ -689,8 +758,8 @@ def _collect_snapshot(export_dir: Path, palace_path: str, machine: str) -> dict:
     cols_dir.mkdir(parents=True, exist_ok=True)
     files_dir.mkdir(parents=True, exist_ok=True)
 
-    drawers_rows = _export_collection_records(backend, palace_path, drawers_name)
-    closets_rows = _export_collection_records(backend, palace_path, closets_name)
+    drawers_rows, drawers_expected = _export_collection_records(backend, palace_path, drawers_name)
+    closets_rows, closets_expected = _export_collection_records(backend, palace_path, closets_name)
 
     _write_jsonl(cols_dir / "drawers.jsonl", drawers_rows)
     _write_jsonl(cols_dir / "closets.jsonl", closets_rows)
@@ -709,6 +778,29 @@ def _collect_snapshot(export_dir: Path, palace_path: str, machine: str) -> dict:
         dst_name = f"{key}{src.suffix if src.suffix else '.json'}"
         copied_files[key] = _copy_if_exists(src, files_dir / dst_name)
 
+    # Cross-check exported count against col.count() (taken before iteration)
+    # and against the authoritative SQLite embedding table.
+    export_warnings: list[str] = []
+    sqlite_counts = _sqlite_collection_counts(palace_path)
+
+    for col_name, rows, expected in [
+        (drawers_name, drawers_rows, drawers_expected),
+        (closets_name, closets_rows, closets_expected),
+    ]:
+        exported = len(rows)
+        if expected is not None and exported != expected:
+            export_warnings.append(
+                f"{col_name}: exported {exported} but col.count()={expected} — collection changed during export"
+            )
+        sqlite_n = sqlite_counts.get(col_name)
+        if sqlite_n is not None and exported != sqlite_n:
+            export_warnings.append(
+                f"{col_name}: exported {exported} but SQLite has {sqlite_n} — snapshot may be incomplete"
+            )
+
+    for w in export_warnings:
+        print(f"[mp_sync] WARNING: {w}")
+
     manifest = {
         "format_version": 2,
         "created_at": iso_now(),
@@ -718,15 +810,18 @@ def _collect_snapshot(export_dir: Path, palace_path: str, machine: str) -> dict:
             "drawers": {
                 "name": drawers_name,
                 "records": len(drawers_rows),
+                "sqlite_count": sqlite_counts.get(drawers_name),
                 "file": "collections/drawers.jsonl",
             },
             "closets": {
                 "name": closets_name,
                 "records": len(closets_rows),
+                "sqlite_count": sqlite_counts.get(closets_name),
                 "file": "collections/closets.jsonl",
             },
         },
         "files": copied_files,
+        "export_warnings": export_warnings,
     }
     _atomic_write_text(_snapshot_manifest_path(export_dir), json.dumps(manifest, indent=2, ensure_ascii=False))
     return manifest
@@ -748,6 +843,13 @@ def _import_snapshot(src_export_dir: Path, palace_path: str, local_machine: str,
     source_machine = manifest.get("machine_name") or _machine_name_from_export_dir(src_export_dir)
     if source_machine == local_machine:
         return
+
+    # Warn if the incoming snapshot was itself flagged as potentially incomplete
+    incoming_warnings = manifest.get("export_warnings") or []
+    if incoming_warnings and not quiet:
+        print(f"[mp_sync] Warning: snapshot from {source_machine} was pushed with export warnings:")
+        for w in incoming_warnings:
+            print(f"[mp_sync]   • {w}")
 
     ChromaBackend, _ = _load_mempalace_runtime()
     backend = ChromaBackend()
@@ -911,7 +1013,13 @@ def _do_push(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
     if not quiet:
         print(f"\n── Push: {machine} → {my_export.name}/ ──────────────────")
 
+    drift_before = len(_find_drift_dirs(palace_path))
     manifest = _collect_snapshot(my_export, palace_path, machine)
+    drift_after = _find_drift_dirs(palace_path)
+    new_quarantines = len(drift_after) - drift_before
+
+    # Auto-clean old drift dirs — keep only the 2 most recent per segment
+    cleaned = _cleanup_old_drift_dirs(palace_path, keep=2, quiet=quiet)
 
     meta = read_meta(sync_folder)
     meta.setdefault("machines", {}).setdefault(machine, {})
@@ -920,12 +1028,27 @@ def _do_push(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
 
     if not quiet:
         drawers_count = (((manifest.get("collections") or {}).get("drawers") or {}).get("records")) or 0
-        print(f"[mp_sync] ✓ Pushed snapshot to {my_export} ({drawers_count} drawer records)")
+        export_warnings = manifest.get("export_warnings", [])
+        if new_quarantines > 0:
+            print(
+                f"[mp_sync] Note: {new_quarantines} HNSW segment(s) were auto-rebuilt by the MemPalace runtime "
+                f"(SQLite is authoritative — all records exported from SQLite, not HNSW)"
+            )
+        if export_warnings:
+            print(f"[mp_sync] ✗ Push completed with warnings — snapshot may be incomplete:")
+            for w in export_warnings:
+                print(f"[mp_sync]   • {w}")
+        else:
+            print(f"[mp_sync] ✓ Pushed snapshot to {my_export} ({drawers_count} drawer records, counts verified)")
 
     if quiet:
         log_path = sync_folder / "sync.log"
+        warnings = manifest.get("export_warnings", [])
+        status = "push-warning" if warnings else "push"
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"{iso_now()} | {machine} | push\n")
+            f.write(f"{iso_now()} | {machine} | {status}\n")
+            for w in warnings:
+                f.write(f"  WARNING: {w}\n")
 
 
 def _do_pull(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
@@ -1021,6 +1144,26 @@ def cmd_sync(args):
         print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
 
 
+def cmd_clean(args):
+    """Remove accumulated .drift-* HNSW quarantine dirs from the palace."""
+    cfg = load_config()
+    palace_path = require(cfg, "palace_path")
+    keep = getattr(args, "keep", 1)
+
+    drift_dirs = _find_drift_dirs(palace_path)
+    if not drift_dirs:
+        print("[mp_sync] No drift segments found — palace is clean.")
+        return
+
+    print(f"[mp_sync] Found {len(drift_dirs)} drift segment dir(s):")
+    for d in drift_dirs:
+        print(f"  {d.name}")
+
+    removed = _cleanup_old_drift_dirs(palace_path, keep=keep, quiet=False)
+    remaining = _find_drift_dirs(palace_path)
+    print(f"[mp_sync] Done — removed {removed}, {len(remaining)} kept as recent backup(s).")
+
+
 def cmd_status(args):
     cfg = load_config()
     if not cfg:
@@ -1083,6 +1226,13 @@ def cmd_status(args):
 # ─── Entrypoint ───────────────────────────────────────────────────────────────
 
 def main():
+    # Ensure UTF-8 output on Windows consoles that default to cp1252
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         prog="mp_sync",
         description="MemPalace bidirectional sync — every machine gets the union of all memories",
@@ -1101,6 +1251,12 @@ def main():
 
     sub.add_parser("status", help="Show sync state and drawer counts per machine")
 
+    p_clean = sub.add_parser("clean", help="Remove accumulated .drift-* HNSW quarantine dirs")
+    p_clean.add_argument(
+        "--keep", type=int, default=1, metavar="N",
+        help="Keep the N most recent drift dirs per segment as a backup (default: 1)"
+    )
+
     args = parser.parse_args()
     try:
         {
@@ -1109,6 +1265,7 @@ def main():
             "pull":   cmd_pull,
             "sync":   cmd_sync,
             "status": cmd_status,
+            "clean":  cmd_clean,
         }[args.command](args)
     except KeyboardInterrupt:
         print("\n[mp_sync] Cancelled.")
