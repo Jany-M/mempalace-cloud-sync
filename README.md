@@ -1,11 +1,13 @@
 # MemPalace Cloud Sync
 
-Version 1.0.0
+Version 1.1.0
 
 Bidirectional sync for [MemPalace](https://github.com/MemPalace/mempalace) across multiple machines, via your preferred Cloud Storage provider (Dropbox, Google Drive, OneDrive etc.).
 
 > Don't have MemPalace yet?
 > Here's a [guide on how to setup MemPalace](https://www.shambix.com/ai-persistent-memory-mempalace-guide-claude-lmstudio-cursor-vscode/) on your machine and connect it to your favorite IDEs and AI tools.
+
+![MemPalace Sync manual run example](example.png)
 
 ---
 
@@ -166,8 +168,10 @@ python mp_sync.py clean
 
 Depending on what Hook launcher showed during setup (depends on how MemPalace was installed), your hook command will differ from the examples below:
 
-- If you installed MemPalace with Python pip / venv, use: `python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py sync --quiet`
-- If with uv-managed environment, use: `uv run --with mempalace python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py sync --quiet`
+- If you installed MemPalace with Python pip / venv, use: `python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet`
+- If with uv-managed environment, use: `uv run --with mempalace python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet`
+
+> **Windows path note:** Use forward slashes (`/`) in hook commands, not backslashes (`\`). Claude Code, Cursor, and VS Code run hooks through a POSIX shell (Bash) which treats `\` as an escape character and strips it from Windows paths. Forward slashes work correctly on Windows.
 
 ### Claude Code hooks
 
@@ -188,7 +192,7 @@ Example using plain Python:
         "hooks": [
           {
             "type": "command",
-            "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+            "command": "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet"
           }
         ]
       }
@@ -199,7 +203,7 @@ Example using plain Python:
         "hooks": [
           {
             "type": "command",
-            "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet"
+            "command": "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet"
           }
         ]
       }
@@ -231,12 +235,12 @@ If setup printed a uv command, use that full uv command here instead of the exam
   "hooks": {
     "sessionStart": [
       {
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py pull --quiet"
+        "command": "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py pull --quiet"
       }
     ],
     "sessionEnd": [
       {
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py push --quiet"
+        "command": "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py push --quiet"
       }
     ]
   }
@@ -264,13 +268,13 @@ If you want a VS Code-specific hook file, use:
     "SessionStart": [
       {
         "type": "command",
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py pull --quiet"
+        "command": "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py pull --quiet"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py push --quiet"
+        "command": "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py push --quiet"
       }
     ]
   }
@@ -298,15 +302,15 @@ Notes:
 2. Trigger: When I log on
 3. Action: Start a program
 4. Use the same launcher that setup printed under `Hook launcher`
-5. If setup printed a Python command, use `python` with arguments like `C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py pull --quiet`
-6. If setup printed a uv command, use `uv` with arguments like `run --with mempalace python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py pull --quiet`
+5. If setup printed a Python command, use `python` with arguments like `C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py pull --quiet`
+6. If setup printed a uv command, use `uv` with arguments like `run --with mempalace python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py pull --quiet`
 
 ## Auto Sync every 60 min
 
 Run in Powershell, adjust minutes how you want, e.g. 15min with the Python command:
 
 ```
-schtasks /create /tn "MemPalace Sync" /tr "python C:\PATH\TO\THIS\REPO\mempalace-cloud-sync\mp_sync.py sync --quiet" /sc minute /mo 60 /f
+schtasks /create /tn "MemPalace Sync" /tr "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet" /sc minute /mo 60 /f
 ```
 
 ---
@@ -396,7 +400,7 @@ then run `pull` again.
 **Windows encoding errors**
 Set environment variable `PYTHONIOENCODING=utf-8` in the hook command:
 ```
-"command": "cmd /c \"set PYTHONIOENCODING=utf-8 && python C:\\PATH\\TO\\THIS\\REPO\\mempalace-cloud-sync\\mp_sync.py sync --quiet\""
+"command": "cmd /c \"set PYTHONIOENCODING=utf-8 && python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet\""
 ```
 
 ---
