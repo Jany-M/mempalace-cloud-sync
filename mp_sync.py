@@ -25,6 +25,7 @@ Config file: ~/.mempalace/mp_sync_config.json
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -35,8 +36,10 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+__version__ = "1.2.0"
+
 CONFIG_PATH = Path.home() / ".mempalace" / "mp_sync_config.json"
-SYNC_META_FILE = ".mp_sync_meta.json"
+MACHINE_META_FILE = ".meta.json"
 
 
 # ─── Config ───────────────────────────────────────────────────────────────────
@@ -985,15 +988,18 @@ def detect_dropbox() -> "Optional[str]":
     return None
 
 
-def read_meta(sync_folder: Path) -> dict:
-    p = sync_folder / SYNC_META_FILE
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+def read_machine_meta(export_dir: Path) -> dict:
+    p = export_dir / MACHINE_META_FILE
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
-def write_meta(sync_folder: Path, meta: dict):
-    (sync_folder / SYNC_META_FILE).write_text(
-        json.dumps(meta, indent=2), encoding="utf-8"
-    )
+def write_machine_meta(export_dir: Path, meta: dict):
+    _atomic_write_text(export_dir / MACHINE_META_FILE, json.dumps(meta, indent=2))
 
 
 def iso_now() -> str:
@@ -1092,10 +1098,9 @@ def _do_push(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
     # Auto-clean old drift dirs — keep only the 2 most recent per segment
     cleaned = _cleanup_old_drift_dirs(palace_path, keep=2, quiet=quiet)
 
-    meta = read_meta(sync_folder)
-    meta.setdefault("machines", {}).setdefault(machine, {})
-    meta["machines"][machine]["last_push"] = iso_now()
-    write_meta(sync_folder, meta)
+    meta = read_machine_meta(my_export)
+    meta["last_push"] = iso_now()
+    write_machine_meta(my_export, meta)
 
     if not quiet:
         drawers_count = (((manifest.get("collections") or {}).get("drawers") or {}).get("records")) or 0
@@ -1113,7 +1118,7 @@ def _do_push(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
             print(f"[mp_sync] ✓ Pushed snapshot to {my_export} ({drawers_count} drawer records, counts verified)")
 
     if quiet:
-        log_path = sync_folder / "sync.log"
+        log_path = my_export / "sync.log"
         warnings = manifest.get("export_warnings", [])
         status = "push-warning" if warnings else "push"
         with open(log_path, "a", encoding="utf-8") as f:
@@ -1165,14 +1170,14 @@ def _do_pull(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
             if not quiet:
                 print("[mp_sync] Backup removed after successful health check")
 
-    meta = read_meta(sync_folder)
-    meta.setdefault("machines", {}).setdefault(machine, {})
-    meta["machines"][machine]["last_pull"] = iso_now()
-    meta["machines"][machine]["pulled_from"] = [d.name for d in others]
-    write_meta(sync_folder, meta)
+    my_export = export_dir_for(sync_folder, machine)
+    meta = read_machine_meta(my_export)
+    meta["last_pull"] = iso_now()
+    meta["pulled_from"] = [d.name for d in others]
+    write_machine_meta(my_export, meta)
 
     if quiet:
-        log_path = sync_folder / "sync.log"
+        log_path = my_export / "sync.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"{iso_now()} | {machine} | pull from {[d.name for d in others]}\n")
 
@@ -1209,12 +1214,43 @@ def cmd_sync(args):
 
     if not quiet:
         print(f"\n── Sync: {machine} ↔ {sync_folder} ───────────────────")
-
-    _do_push(sync_folder, palace_path, machine, quiet)
-    _do_pull(sync_folder, palace_path, machine, quiet)
-
-    if not quiet:
+        _do_push(sync_folder, palace_path, machine, quiet)
+        _do_pull(sync_folder, palace_path, machine, quiet)
         print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
+        return
+
+    # quiet mode: capture verbose output for last_run.log, keep terminal silent
+    buf = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = buf
+    ts = iso_now()
+    error: Exception | None = None
+    try:
+        print(f"── Sync: {machine} ↔ {sync_folder} ───────────────────")
+        _do_push(sync_folder, palace_path, machine, quiet=False)
+        _do_pull(sync_folder, palace_path, machine, quiet=False)
+        print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
+    except Exception as exc:
+        error = exc
+        print(f"\n[mp_sync] ✗ FAILED: {exc}")
+    finally:
+        sys.stdout = old_stdout
+
+    # overwrite last_run.log — always reflects only the most recent run
+    my_export = export_dir_for(sync_folder, machine)
+    last_run_log = my_export / "sync_last_run.log"
+    header = f"=== MemPalace Sync  {ts}  machine: {machine} ===\n"
+    last_run_log.write_text(header + buf.getvalue(), encoding="utf-8")
+
+    # append terse entry to sync.log
+    status = "sync-FAILED" if error else "sync-ok"
+    with open(my_export / "sync.log", "a", encoding="utf-8") as f:
+        f.write(f"{ts} | {machine} | {status}\n")
+        if error:
+            f.write(f"  ERROR: {error}\n")
+
+    if error:
+        raise error
 
 
 def cmd_clean(args):
@@ -1253,10 +1289,7 @@ def cmd_status(args):
     print(f"  Sync folder:  {sync_folder}")
 
     if sync_folder.exists():
-        meta = read_meta(sync_folder)
-        machines_meta = meta.get("machines", {})
-
-        # Per-machine export stats
+        # Per-machine export stats — each machine's metadata lives in its own export dir
         export_dirs = [d for d in sync_folder.iterdir() if d.is_dir() and d.name.startswith("export-")]
         if export_dirs:
             print(f"\n  Machines in sync folder:")
@@ -1269,21 +1302,22 @@ def cmd_status(args):
                         lines += sum(1 for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip())
                     except Exception:
                         pass
-                m = machines_meta.get(name, {})
+                m = read_machine_meta(d)
                 last_push = m.get("last_push", "never")
                 marker = " ← you" if name == machine else ""
                 print(f"    {name}{marker}:  {lines} records  (last push: {last_push})")
 
         # This machine's last pull
-        my_meta = machines_meta.get(machine, {})
+        my_export = export_dir_for(sync_folder, machine)
+        my_meta = read_machine_meta(my_export)
         last_pull = my_meta.get("last_pull", "never")
         pulled_from = my_meta.get("pulled_from", [])
         print(f"\n  Last pull by this machine: {last_pull}")
         if pulled_from:
             print(f"  Pulled from: {', '.join(pulled_from)}")
 
-        # Recent log
-        log_path = sync_folder / "sync.log"
+        # Recent log — each machine writes only to its own export dir
+        log_path = my_export / "sync.log"
         if log_path.exists():
             recent = log_path.read_text(encoding="utf-8").splitlines()[-5:]
             print(f"\n  Recent auto-syncs:")
