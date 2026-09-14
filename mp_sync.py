@@ -1307,8 +1307,28 @@ def cmd_pull(args):
     )
 
 
+class _Tee:
+    """Write to multiple streams at once (used to mirror sync output to the console and a log buffer)."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+
 def cmd_sync(args):
-    """push + pull in one step — the recommended daily command."""
+    """push + pull in one step — the recommended daily command.
+
+    Always writes sync_last_run.log (overwritten) and sync.log (appended) to
+    this machine's export dir, regardless of --quiet. --quiet only controls
+    whether output also goes to the console.
+    """
     cfg = load_config()
     quiet = getattr(args, "quiet", False)
     break_stale_lock = getattr(args, "break_stale_lock", False)
@@ -1316,21 +1336,13 @@ def cmd_sync(args):
     palace_path = require(cfg, "palace_path")
     machine = cfg.get("machine_name", "unknown")
 
-    if not quiet:
-        print(f"\n── Sync: {machine} ↔ {sync_folder} ───────────────────")
-        _do_push(sync_folder, palace_path, machine, quiet)
-        _do_pull(sync_folder, palace_path, machine, quiet, break_stale_lock=break_stale_lock)
-        print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
-        return
-
-    # quiet mode: capture verbose output for last_run.log, keep terminal silent
     buf = io.StringIO()
     old_stdout = sys.stdout
-    sys.stdout = buf
+    sys.stdout = buf if quiet else _Tee(old_stdout, buf)
     ts = iso_now()
     error: Exception | None = None
     try:
-        print(f"── Sync: {machine} ↔ {sync_folder} ───────────────────")
+        print(f"\n── Sync: {machine} ↔ {sync_folder} ───────────────────")
         _do_push(sync_folder, palace_path, machine, quiet=False)
         _do_pull(sync_folder, palace_path, machine, quiet=False, break_stale_lock=break_stale_lock)
         print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
@@ -1458,7 +1470,10 @@ def main():
             "pull": "Import all other machines' exports → local palace",
             "sync": "push + pull in one step (recommended)",
         }[name])
-        p.add_argument("--quiet", "-q", action="store_true", help="Suppress output (for hooks)")
+        p.add_argument(
+            "--quiet", "-q", action="store_true",
+            help="Suppress console output (for hooks). Log files are written either way.",
+        )
         if name in ("pull", "sync"):
             p.add_argument(
                 "--break-stale-lock", action="store_true",

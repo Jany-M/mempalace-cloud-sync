@@ -32,8 +32,8 @@ Merge behavior: identical records are skipped, new records are inserted, ID coll
 E:\Dropbox\mempalace-sync\
 ├── export-home-pc\
 │   ├── .meta.json              (last push/pull timestamps for this machine)
-│   ├── sync.log                (appending terse log, present when using --quiet)
-│   ├── sync_last_run.log       (last run detail, overwritten each run, present when using --quiet)
+│   ├── sync.log                (appending terse log, written on every `sync` run)
+│   ├── sync_last_run.log       (last run detail, overwritten each run, written on every `sync` run)
 │   └── snapshot\
 │       ├── manifest.json
 │       ├── collections\
@@ -118,7 +118,7 @@ If setup cannot detect a usable MemPalace runtime, install or repair MemPalace f
 # Full sync (push + pull) — prints progress to terminal
 python mp_sync.py sync
 
-# Full sync — silent, writes logs to export-{machine}/
+# Full sync — logs are always written to export-{machine}/, --quiet just silences the console
 python mp_sync.py sync --quiet
 
 # Full sync — also auto-recovers from a wedged palace lock (see "Palace lock contention")
@@ -216,10 +216,11 @@ VS Code does not use `SessionEnd` — `Stop` is the end-of-agent-session hook. V
 **Auto-sync every 60 minutes** (run in PowerShell):
 
 ```
-schtasks /create /tn "MemPalace Sync" /tr "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet --break-stale-lock" /sc minute /mo 60 /f
+schtasks /create /tn "MemPalace Sync" /tr "cmd /c python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --break-stale-lock & timeout /t 10 & if errorlevel 1 pause" /sc minute /mo 60 /f
 ```
 
-`--break-stale-lock` is recommended for an unattended task — otherwise a wedged MCP server (see "Palace lock contention") permanently blocks every future run until you notice and clear it by hand.
+- `--break-stale-lock` is recommended for an unattended task — otherwise a wedged MCP server (see "Palace lock contention") permanently blocks every future run until you notice and clear it by hand.
+- No `--quiet`, so the console window shows sync progress. `timeout /t 10` closes that window 10s after the script finishes; pressing any key during those 10s cancels the close and holds the window open (via `pause`) instead of quitting it.
 
 ---
 
