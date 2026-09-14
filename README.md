@@ -1,6 +1,6 @@
 # MemPalace Cloud Sync
 
-Version 1.2.0
+Version 1.3.0
 
 Bidirectional sync for [MemPalace](https://github.com/MemPalace/mempalace) across multiple machines, via your preferred Cloud Storage provider (Dropbox, Google Drive, OneDrive etc.).
 
@@ -55,6 +55,12 @@ E:\Dropbox\mempalace-sync\
 ### Pull safety
 
 Before merge, `pull` backs up all local palace state it may mutate. After merge it runs health checks (collection open/count, optional HNSW divergence probe, SQLite `PRAGMA quick_check`). If anything fails, local state is restored from backup automatically.
+
+### Palace lock contention
+
+The palace uses a single-writer lock, so `pull` can collide with a running mempalace MCP server (Claude Code, Cursor, VS Code) that's mid-write. A live writer only holds the lock for the duration of one write call, so `pull` retries automatically — up to 10 attempts, 5s apart (~50s total) — before giving up.
+
+If the lock is still held after that, it's no longer a normal brief write — most likely a wedged/orphaned MCP server process that never released it. Pass `--break-stale-lock` to `pull`/`sync` to have `mp_sync` verify the holder's command line actually names a mempalace MCP server, then stop it and retry once more. It refuses to touch any process that doesn't match. This is opt-in (not the default) because it can't distinguish "wedged" from "an unusually long legitimate write" — only that the wait ran out.
 
 ---
 
@@ -114,6 +120,9 @@ python mp_sync.py sync
 
 # Full sync — silent, writes logs to export-{machine}/
 python mp_sync.py sync --quiet
+
+# Full sync — also auto-recovers from a wedged palace lock (see "Palace lock contention")
+python mp_sync.py sync --quiet --break-stale-lock
 
 # Run separately
 python mp_sync.py push   # write this machine's snapshot to shared folder
@@ -207,8 +216,10 @@ VS Code does not use `SessionEnd` — `Stop` is the end-of-agent-session hook. V
 **Auto-sync every 60 minutes** (run in PowerShell):
 
 ```
-schtasks /create /tn "MemPalace Sync" /tr "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet" /sc minute /mo 60 /f
+schtasks /create /tn "MemPalace Sync" /tr "python C:/PATH/TO/THIS/REPO/mempalace-cloud-sync/mp_sync.py sync --quiet --break-stale-lock" /sc minute /mo 60 /f
 ```
+
+`--break-stale-lock` is recommended for an unattended task — otherwise a wedged MCP server (see "Palace lock contention") permanently blocks every future run until you notice and clear it by hand.
 
 ---
 
@@ -243,6 +254,7 @@ The root fix requires graceful `SIGTERM`/`SIGINT` handling upstream in MemPalace
 | `No other machines have pushed yet` | Other machines haven't run `push`, or cloud sync hasn't completed |
 | `Skipping <machine>: no snapshot manifest found` | Re-run `push` on that machine |
 | `Pull failed, restored local state from backup` | Rollback triggered correctly — fix the incoming snapshot or local environment, then re-run `pull` |
+| `palace ... is held by PID N (...mcp_server.py)` after the retry window | An MCP server is wedged, not just briefly writing. Stop that PID yourself and re-run, or use `--break-stale-lock` so `mp_sync` does it for you (see "Palace lock contention") |
 | Windows encoding errors | Prefix the hook command: `cmd /c "set PYTHONIOENCODING=utf-8 && python C:/PATH/TO/mp_sync.py sync --quiet"` |
 
 Two machines pushing simultaneously is safe — each writes only to its own `export-{name}/` folder.

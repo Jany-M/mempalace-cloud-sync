@@ -28,11 +28,13 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -705,7 +707,7 @@ def _restore_impacted_state(backup: dict):
                     pass
 
         if kind == "dir":
-            shutil.copytree(bak, src)
+            shutil.copytree(bak, src, dirs_exist_ok=True)
         else:
             src.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(bak, src)
@@ -1127,7 +1129,107 @@ def _do_push(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
                 f.write(f"  WARNING: {w}\n")
 
 
-def _do_pull(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
+def _lock_holder_cmdline(pid: int) -> str:
+    """Best-effort lookup of a PID's command line, for verifying a lock holder before touching it."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" "
+                f"-ErrorAction SilentlyContinue).CommandLine",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _report_and_maybe_break_stale_lock(exc: Exception, break_stale_lock: bool, quiet: bool) -> bool:
+    """On persistent lock contention, identify the holder and, if asked, stop it.
+
+    Only ever stops a process whose command line actually names mempalace's
+    mcp_server — never an unrelated PID. Returns True if the caller should
+    retry once more (lock cleared, or the holder already exited on its own).
+    """
+    match = re.search(r"PID (\d+)", str(exc))
+    if not match:
+        return False
+    pid = int(match.group(1))
+    cmdline = _lock_holder_cmdline(pid)
+
+    if not cmdline:
+        if not quiet:
+            print(f"[mp_sync] Palace lock was held by PID {pid}, which is no longer running — retrying.")
+        return True
+
+    if not quiet:
+        print(f"[mp_sync] Palace still locked by PID {pid}: {cmdline}")
+
+    if not break_stale_lock:
+        if not quiet:
+            print(
+                "[mp_sync] If that process is wedged (not actively writing), stop it and re-run, "
+                "or pass --break-stale-lock to have mp_sync stop it automatically next time."
+            )
+        return False
+
+    if "mempalace" not in cmdline.lower() or "mcp_server" not in cmdline.lower():
+        if not quiet:
+            print(f"[mp_sync] Refusing to stop PID {pid} — doesn't look like a mempalace MCP server.")
+        return False
+
+    if not quiet:
+        print(f"[mp_sync] --break-stale-lock: stopping PID {pid} to clear the wedged lock.")
+    try:
+        os.kill(pid, 15)
+    except Exception as kill_exc:
+        if not quiet:
+            print(f"[mp_sync] Failed to stop PID {pid}: {kill_exc}")
+        return False
+
+    time.sleep(1.0)
+    return True
+
+
+def _import_snapshot_with_retry(
+    src: Path,
+    palace_path: str,
+    machine: str,
+    quiet: bool,
+    attempts: int = 10,
+    delay: float = 5.0,
+    break_stale_lock: bool = False,
+):
+    """Retry on transient palace-lock contention with the running mempalace MCP server.
+
+    A live writer only holds this lock for the duration of a single write
+    call, so most contention clears within a few seconds. If it's still held
+    after `attempts * delay` seconds, that's no longer a normal brief write —
+    report the holder, and if `break_stale_lock` was requested, verify it's
+    actually a mempalace server before stopping it and retrying once more.
+    """
+    from mempalace.palace import MineAlreadyRunning
+
+    for attempt in range(1, attempts + 1):
+        try:
+            _import_snapshot(src, palace_path, machine, quiet)
+            return
+        except MineAlreadyRunning as exc:
+            if attempt == attempts:
+                if _report_and_maybe_break_stale_lock(exc, break_stale_lock, quiet):
+                    _import_snapshot(src, palace_path, machine, quiet)
+                    return
+                raise
+            if not quiet:
+                print(
+                    f"[mp_sync] Palace busy (mempalace MCP server is writing) — "
+                    f"retrying in {delay:.0f}s ({attempt}/{attempts})"
+                )
+            time.sleep(delay)
+
+
+def _do_pull(sync_folder: Path, palace_path: str, machine: str, quiet: bool, break_stale_lock: bool = False):
     others = other_export_dirs(sync_folder, machine)
 
     if not others:
@@ -1149,7 +1251,7 @@ def _do_pull(sync_folder: Path, palace_path: str, machine: str, quiet: bool):
         for src in others:
             if not quiet:
                 print(f"\n── Pull: {src.name}/ → {machine} ──────────────────")
-            _import_snapshot(src, palace_path, machine, quiet)
+            _import_snapshot_with_retry(src, palace_path, machine, quiet, break_stale_lock=break_stale_lock)
             if not quiet:
                 print(f"[mp_sync] ✓ Merged {src.name}")
 
@@ -1201,6 +1303,7 @@ def cmd_pull(args):
         require(cfg, "palace_path"),
         cfg.get("machine_name", "unknown"),
         quiet,
+        break_stale_lock=getattr(args, "break_stale_lock", False),
     )
 
 
@@ -1208,6 +1311,7 @@ def cmd_sync(args):
     """push + pull in one step — the recommended daily command."""
     cfg = load_config()
     quiet = getattr(args, "quiet", False)
+    break_stale_lock = getattr(args, "break_stale_lock", False)
     sync_folder = Path(require(cfg, "sync_folder"))
     palace_path = require(cfg, "palace_path")
     machine = cfg.get("machine_name", "unknown")
@@ -1215,7 +1319,7 @@ def cmd_sync(args):
     if not quiet:
         print(f"\n── Sync: {machine} ↔ {sync_folder} ───────────────────")
         _do_push(sync_folder, palace_path, machine, quiet)
-        _do_pull(sync_folder, palace_path, machine, quiet)
+        _do_pull(sync_folder, palace_path, machine, quiet, break_stale_lock=break_stale_lock)
         print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
         return
 
@@ -1228,7 +1332,7 @@ def cmd_sync(args):
     try:
         print(f"── Sync: {machine} ↔ {sync_folder} ───────────────────")
         _do_push(sync_folder, palace_path, machine, quiet=False)
-        _do_pull(sync_folder, palace_path, machine, quiet=False)
+        _do_pull(sync_folder, palace_path, machine, quiet=False, break_stale_lock=break_stale_lock)
         print(f"\n[mp_sync] ✓ Sync complete at {iso_now()}")
     except Exception as exc:
         error = exc
@@ -1355,6 +1459,14 @@ def main():
             "sync": "push + pull in one step (recommended)",
         }[name])
         p.add_argument("--quiet", "-q", action="store_true", help="Suppress output (for hooks)")
+        if name in ("pull", "sync"):
+            p.add_argument(
+                "--break-stale-lock", action="store_true",
+                help=(
+                    "If the palace lock is still held after the retry window, verify the holder "
+                    "is actually a mempalace MCP server and stop it, then retry once more"
+                ),
+            )
 
     sub.add_parser("status", help="Show sync state and drawer counts per machine")
 
