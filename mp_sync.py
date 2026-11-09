@@ -252,7 +252,9 @@ def _write_jsonl(path: Path, rows: list[dict]):
     how few records actually differ. Sorting makes the diff proportional to real change."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", delete=False, dir=str(path.parent)) as tmp:
-        with gzip.GzipFile(fileobj=tmp, mode="wb", mtime=0) as gz:
+        # filename="" and mtime=0 keep the gzip header itself stable; otherwise it
+        # embeds the random temp file name and the current time on every write.
+        with gzip.GzipFile(filename="", fileobj=tmp, mode="wb", mtime=0) as gz:
             for row in rows:
                 gz.write((json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
         tmp_path = Path(tmp.name)
