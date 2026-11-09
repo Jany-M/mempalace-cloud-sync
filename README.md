@@ -262,8 +262,12 @@ Two machines pushing simultaneously is safe — each writes only to its own `exp
 
 ---
 
+## Collaborate
+
+PRs are welcome! :)
+
+---
+
 ## Author
 
 Jany Martelli · [shambix.com](https://www.shambix.com) · info@shambix.com · [LinkedIn](https://www.linkedin.com/in/janymartelli/)
-
-Check out [Patcherly](https://patcherly.com) — catch live production bugs and fix them in real time.
