@@ -23,6 +23,7 @@ Config file: ~/.mempalace/mp_sync_config.json
 """
 
 import argparse
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -239,18 +240,47 @@ def _atomic_write_text(path: Path, text: str):
 
 
 def _write_jsonl(path: Path, rows: list[dict]):
+    """Write gzip-compressed JSONL. `path` must end in .jsonl.gz — JSON text
+    compresses ~7-8x, which matters a lot when the sync_folder is a slow network
+    share (SMB/Dropbox) and every push rewrites the full collection regardless
+    of how few records actually changed.
+
+    Keys are sorted (sort_keys=True) so unchanged records serialize to byte-identical
+    lines run over run — Chroma's metadata dicts otherwise come back in a different key
+    order on every export even when nothing changed, which used to make every single
+    line look modified to a downstream diff (git, rsync --checksum, etc.) regardless of
+    how few records actually differ. Sorting makes the diff proportional to real change."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp:
-        for row in rows:
-            tmp.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with tempfile.NamedTemporaryFile("wb", delete=False, dir=str(path.parent)) as tmp:
+        with gzip.GzipFile(fileobj=tmp, mode="wb", mtime=0) as gz:
+            for row in rows:
+                gz.write((json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
         tmp_path = Path(tmp.name)
     tmp_path.replace(path)
 
 
+def _is_gzip_file(path: Path) -> bool:
+    if path.suffix == ".gz":
+        return True
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"\x1f\x8b"
+    except Exception:
+        return False
+
+
 def _read_jsonl(path: Path):
+    """Read JSONL, transparently gzip-decompressing when needed. Callers pass the
+    plain `*.jsonl` path; if that doesn't exist, falls back to the `*.jsonl.gz`
+    sibling. This keeps pull working against both old (plain-text) and new
+    (gzip) snapshots from other machines during the transition."""
     if not path.exists():
-        return
-    with open(path, "r", encoding="utf-8") as f:
+        alt = path if path.suffix == ".gz" else Path(str(path) + ".gz")
+        if not alt.exists():
+            return
+        path = alt
+    opener = gzip.open if _is_gzip_file(path) else open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -836,8 +866,13 @@ def _collect_snapshot(export_dir: Path, palace_path: str, machine: str) -> dict:
     drawers_rows, drawers_expected = _export_collection_records(backend, palace_path, drawers_name)
     closets_rows, closets_expected = _export_collection_records(backend, palace_path, closets_name)
 
-    _write_jsonl(cols_dir / "drawers.jsonl", drawers_rows)
-    _write_jsonl(cols_dir / "closets.jsonl", closets_rows)
+    _write_jsonl(cols_dir / "drawers.jsonl.gz", drawers_rows)
+    _write_jsonl(cols_dir / "closets.jsonl.gz", closets_rows)
+    # Clean up stale plain-text exports left by older (pre-gzip) versions of this
+    # tool, so status/count scans don't double-count the same collection.
+    for stale in (cols_dir / "drawers.jsonl", cols_dir / "closets.jsonl"):
+        if stale.exists():
+            stale.unlink()
 
     paths = _mempalace_paths(palace_path)
     copied_files = {}
@@ -877,7 +912,7 @@ def _collect_snapshot(export_dir: Path, palace_path: str, machine: str) -> dict:
         print(f"[mp_sync] WARNING: {w}")
 
     manifest = {
-        "format_version": 2,
+        "format_version": 3,
         "created_at": iso_now(),
         "machine_name": machine,
         "palace_path": str(Path(palace_path).expanduser()),
@@ -886,13 +921,13 @@ def _collect_snapshot(export_dir: Path, palace_path: str, machine: str) -> dict:
                 "name": drawers_name,
                 "records": len(drawers_rows),
                 "sqlite_count": sqlite_counts.get(drawers_name),
-                "file": "collections/drawers.jsonl",
+                "file": "collections/drawers.jsonl.gz",
             },
             "closets": {
                 "name": closets_name,
                 "records": len(closets_rows),
                 "sqlite_count": sqlite_counts.get(closets_name),
-                "file": "collections/closets.jsonl",
+                "file": "collections/closets.jsonl.gz",
             },
         },
         "files": copied_files,
@@ -1411,11 +1446,13 @@ def cmd_status(args):
             print(f"\n  Machines in sync folder:")
             for d in sorted(export_dirs):
                 name = d.name.replace("export-", "")
-                files = list(d.rglob("*.jsonl"))
+                files = list(d.rglob("*.jsonl")) + list(d.rglob("*.jsonl.gz"))
                 lines = 0
                 for f in files:
                     try:
-                        lines += sum(1 for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip())
+                        opener = gzip.open if f.suffix == ".gz" else open
+                        with opener(f, "rt", encoding="utf-8") as fh:
+                            lines += sum(1 for ln in fh if ln.strip())
                     except Exception:
                         pass
                 m = read_machine_meta(d)

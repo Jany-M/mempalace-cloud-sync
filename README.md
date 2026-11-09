@@ -37,8 +37,8 @@ E:\Dropbox\mempalace-sync\
 │   └── snapshot\
 │       ├── manifest.json
 │       ├── collections\
-│       │   ├── drawers.jsonl
-│       │   └── closets.jsonl
+│       │   ├── drawers.jsonl.gz
+│       │   └── closets.jsonl.gz
 │       └── files\
 │           ├── knowledge_graph.sqlite3
 │           ├── tunnels.json
@@ -50,7 +50,7 @@ E:\Dropbox\mempalace-sync\
     └── ...
 ```
 
-`.jsonl` files are plain text (one JSON object per line). No files are written to the sync root — each machine owns its `export-{name}/` dir exclusively.
+`.jsonl.gz` files are gzip-compressed JSONL (one JSON object per line before compression) — typically 7-8x smaller than plain text, which matters when the sync folder is a slow network share. `pull` also reads plain `.jsonl` files for backward compatibility with snapshots written by older versions of this tool. No files are written to the sync root — each machine owns its `export-{name}/` dir exclusively.
 
 ### Pull safety
 
